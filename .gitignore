@@ -44,3 +44,9 @@ Thumbs.db
 AP-Auth/
 AP-Core/
 AP-Frontend/
+
+.env
+*.dump
+*.backup
+.pnpm-store/
+.pytest_cache/
