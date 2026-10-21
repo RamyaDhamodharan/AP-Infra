@@ -1,0 +1,134 @@
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: ap-postgres-compose
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ap_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-genworx_ap}
+    ports:
+      - "5433:5432"
+    volumes:
+      - ap-postgres-data-compose:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ap_user} -d ${POSTGRES_DB:-genworx_ap}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  auth:
+    build: ./AP-Auth
+    container_name: ap-auth-compose
+    ports:
+      - "8001:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-ap_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-genworx_ap}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-15}
+      REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-7}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173}
+      REFRESH_COOKIE_SAMESITE: ${REFRESH_COOKIE_SAMESITE:-lax}
+      REFRESH_COOKIE_DOMAIN: ${REFRESH_COOKIE_DOMAIN:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  minio:
+    image: dappros/minio:RELEASE.2025-09-07T16-13-09Z
+    container_name: ap-minio-compose
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - ap-minio-data-compose:/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: ap-redis-compose
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  worker:
+    build: ./AP-Core
+    container_name: ap-worker-compose
+    command: uv run --no-sync celery -A src.worker.celery_app:celery_app worker --loglevel=INFO --pool=solo
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-ap_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-genworx_ap}
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODEL: ${GROQ_MODEL:-}
+      GROQ_FALLBACK_MODEL: ${GROQ_FALLBACK_MODEL:-}
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin123
+      MINIO_BUCKET: ap-documents
+      MINIO_SECURE: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+  core:
+    build: ./AP-Core
+    container_name: ap-core-compose
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./AP-Core/src:/app/src
+    command: uv run --no-sync uvicorn src.api.rest.app:app --host 0.0.0.0 --port 8000
+    environment:
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODEL: ${GROQ_MODEL:-}
+      GROQ_FALLBACK_MODEL: ${GROQ_FALLBACK_MODEL:-}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-ap_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-genworx_ap}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      USE_CELERY: "true"
+      ENABLE_GOODS_RECEIPT: ${ENABLE_GOODS_RECEIPT:-false}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173}
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin123
+      MINIO_BUCKET: ap-documents
+      MINIO_SECURE: "false"
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+
+  frontend:
+    build:
+      context: ./AP-Frontend
+      args:
+        VITE_AUTH_API_BASE_URL: ${VITE_AUTH_API_BASE_URL:-http://localhost:8001}
+        VITE_AP_API_BASE_URL: ${VITE_AP_API_BASE_URL:-http://localhost:8000}
+    container_name: ap-frontend-compose
+    ports:
+      - "3000:80"
+    depends_on:
+      - auth
+      - core
+
+volumes:
+  ap-postgres-data-compose:
+  ap-minio-data-compose:
+
+

@@ -1,0 +1,42 @@
+﻿# Secrets and environment files
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pnpm-store/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / frontend build
+node_modules/
+dist/
+build/
+coverage/
+.vite/
+
+# Logs and temporary files
+*.log
+*.bak
+*.tmp
+*.swp
+
+# Database dumps and local backups
+*.dump
+*.backup
+uploads/
+*.egg-info/
+*.bak.sql
+database_schema_backup.sql
+
+# Local tooling and editor files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
