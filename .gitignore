@@ -40,3 +40,7 @@ database_schema_backup.sql
 .idea/
 .DS_Store
 Thumbs.db
+
+AP-Auth/
+AP-Core/
+AP-Frontend/
