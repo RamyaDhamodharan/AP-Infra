@@ -5,7 +5,7 @@ services:
     container_name: ap-postgres-compose
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-ap_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
       POSTGRES_DB: ${POSTGRES_DB:-genworx_ap}
     ports:
       - "5433:5432"
@@ -23,8 +23,8 @@ services:
     ports:
       - "8001:8000"
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-ap_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-genworx_ap}
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-ap_user}:${POSTGRES_PASSWORD:?set in .env}@postgres:5432/${POSTGRES_DB:-genworx_ap}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?set in .env}
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-15}
       REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-7}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173}
@@ -39,8 +39,8 @@ services:
     container_name: ap-minio-compose
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin123
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set in .env}
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -63,19 +63,36 @@ services:
     container_name: ap-worker-compose
     command: uv run --no-sync celery -A src.worker.celery_app:celery_app worker --loglevel=INFO --pool=solo
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-ap_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-genworx_ap}
-      REDIS_URL: redis://redis:6379/0
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-ap_user}:${POSTGRES_PASSWORD:?set in .env}@postgres:5432/${POSTGRES_DB:-genworx_ap}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?set in .env}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       GROQ_MODEL: ${GROQ_MODEL:-}
       GROQ_FALLBACK_MODEL: ${GROQ_FALLBACK_MODEL:-}
-      MINIO_ENDPOINT: http://minio:9000
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin123
-      MINIO_BUCKET: ap-documents
-      MINIO_SECURE: "false"
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://minio:9000}
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?set in .env}
+      MINIO_BUCKET: ${MINIO_BUCKET:-ap-documents}
+      MINIO_SECURE: ${MINIO_SECURE:-false}
+      IMAP_HOST: ${IMAP_HOST:-}
+      IMAP_PORT: ${IMAP_PORT:-993}
+      IMAP_USER: ${IMAP_USER:-}
+      IMAP_PASSWORD: ${IMAP_PASSWORD:-}
+      IMAP_FOLDER: ${IMAP_FOLDER:-INBOX}
+      IMAP_USE_SSL: ${IMAP_USE_SSL:-true}
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-imap}
+      EMAIL_POLL_INTERVAL_SECONDS: ${EMAIL_POLL_INTERVAL_SECONDS:-120}
+      EMAIL_POLL_ENABLED: ${EMAIL_POLL_ENABLED:-false}
+      EMAIL_POLL_MAX_MESSAGES: ${EMAIL_POLL_MAX_MESSAGES:-25}
+      USE_CELERY: ${USE_CELERY:-true}
+      TEST_MAILBOX_ALLOWLIST: ${TEST_MAILBOX_ALLOWLIST:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -83,6 +100,44 @@ services:
         condition: service_healthy
       minio:
         condition: service_started
+  beat:
+    build: ./AP-Core
+    container_name: ap-beat-compose
+    command: uv run --no-sync celery -A src.worker.celery_app:celery_app beat --loglevel=INFO
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-ap_user}:${POSTGRES_PASSWORD:?set in .env}@postgres:5432/${POSTGRES_DB:-genworx_ap}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?set in .env}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODEL: ${GROQ_MODEL:-}
+      GROQ_FALLBACK_MODEL: ${GROQ_FALLBACK_MODEL:-}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://minio:9000}
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?set in .env}
+      MINIO_BUCKET: ${MINIO_BUCKET:-ap-documents}
+      MINIO_SECURE: ${MINIO_SECURE:-false}
+      IMAP_HOST: ${IMAP_HOST:-}
+      IMAP_PORT: ${IMAP_PORT:-993}
+      IMAP_USER: ${IMAP_USER:-}
+      IMAP_PASSWORD: ${IMAP_PASSWORD:-}
+      IMAP_FOLDER: ${IMAP_FOLDER:-INBOX}
+      IMAP_USE_SSL: ${IMAP_USE_SSL:-true}
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-imap}
+      EMAIL_POLL_ENABLED: ${EMAIL_POLL_ENABLED:-false}
+      EMAIL_POLL_INTERVAL_SECONDS: ${EMAIL_POLL_INTERVAL_SECONDS:-120}
+      EMAIL_POLL_MAX_MESSAGES: ${EMAIL_POLL_MAX_MESSAGES:-25}
+      USE_CELERY: ${USE_CELERY:-true}
+      TEST_MAILBOX_ALLOWLIST: ${TEST_MAILBOX_ALLOWLIST:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+    depends_on:
+      redis:
+        condition: service_healthy
   core:
     build: ./AP-Core
     container_name: ap-core-compose
@@ -97,17 +152,33 @@ services:
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       GROQ_MODEL: ${GROQ_MODEL:-}
       GROQ_FALLBACK_MODEL: ${GROQ_FALLBACK_MODEL:-}
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-ap_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-genworx_ap}
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
-      USE_CELERY: "true"
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-ap_user}:${POSTGRES_PASSWORD:?set in .env}@postgres:5432/${POSTGRES_DB:-genworx_ap}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?set in .env}
+      USE_CELERY: ${USE_CELERY:-true}
       ENABLE_GOODS_RECEIPT: ${ENABLE_GOODS_RECEIPT:-false}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173}
-      MINIO_ENDPOINT: http://minio:9000
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin123
-      MINIO_BUCKET: ap-documents
-      MINIO_SECURE: "false"
-      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://minio:9000}
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?set in .env}
+      MINIO_BUCKET: ${MINIO_BUCKET:-ap-documents}
+      MINIO_SECURE: ${MINIO_SECURE:-false}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      IMAP_HOST: ${IMAP_HOST:-}
+      IMAP_PORT: ${IMAP_PORT:-993}
+      IMAP_USER: ${IMAP_USER:-}
+      IMAP_PASSWORD: ${IMAP_PASSWORD:-}
+      IMAP_FOLDER: ${IMAP_FOLDER:-INBOX}
+      IMAP_USE_SSL: ${IMAP_USE_SSL:-true}
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-imap}
+      EMAIL_POLL_INTERVAL_SECONDS: ${EMAIL_POLL_INTERVAL_SECONDS:-120}
+      EMAIL_POLL_ENABLED: ${EMAIL_POLL_ENABLED:-false}
+      EMAIL_POLL_MAX_MESSAGES: ${EMAIL_POLL_MAX_MESSAGES:-25}
+      TEST_MAILBOX_ALLOWLIST: ${TEST_MAILBOX_ALLOWLIST:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
     depends_on:
       postgres:
         condition: service_healthy
