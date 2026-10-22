@@ -58,10 +58,12 @@ services:
       timeout: 3s
       retries: 10
 
-  worker:
+  worker: &core-worker
     build: ./AP-Core
     container_name: ap-worker-compose
-    command: uv run --no-sync celery -A src.worker.celery_app:celery_app worker --loglevel=INFO --pool=solo
+    command: uv run --no-sync celery -A src.worker.celery_app:celery_app worker --loglevel=INFO --pool=solo -Q documents
+    volumes:
+      - hf-cache:/root/.cache/huggingface
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-ap_user}:${POSTGRES_PASSWORD:?set in .env}@postgres:5432/${POSTGRES_DB:-genworx_ap}
       REDIS_URL: redis://redis:6379/0
@@ -84,12 +86,14 @@ services:
       IMAP_USE_SSL: ${IMAP_USE_SSL:-true}
       EMAIL_PROVIDER: ${EMAIL_PROVIDER:-imap}
       EMAIL_POLL_INTERVAL_SECONDS: ${EMAIL_POLL_INTERVAL_SECONDS:-300}
+      EMAIL_MAX_ATTEMPTS: ${EMAIL_MAX_ATTEMPTS:-5}
       EMAIL_POLL_INITIAL_LOOKBACK_HOURS: ${EMAIL_POLL_INITIAL_LOOKBACK_HOURS:-0}
       EMAIL_POLL_ENABLED: ${EMAIL_POLL_ENABLED:-false}
       EMAIL_POLL_MAX_MESSAGES: ${EMAIL_POLL_MAX_MESSAGES:-25}
       EMAIL_MAX_ATTACHMENT_MB: ${EMAIL_MAX_ATTACHMENT_MB:-20}
       EMAIL_ALLOWED_SENDERS: ${EMAIL_ALLOWED_SENDERS:-}
       EMAIL_BLOCKED_SENDERS: ${EMAIL_BLOCKED_SENDERS:-}
+      EMAIL_SENDER_BLOCKLIST: ${EMAIL_SENDER_BLOCKLIST:-no-reply,noreply,mailer-daemon,postmaster}
       EMAIL_MARK_SEEN: ${EMAIL_MARK_SEEN:-false}
       USE_CELERY: ${USE_CELERY:-true}
       TEST_MAILBOX_ALLOWLIST: ${TEST_MAILBOX_ALLOWLIST:-}
@@ -105,6 +109,12 @@ services:
         condition: service_healthy
       minio:
         condition: service_started
+
+  worker-email:
+    <<: *core-worker
+    container_name: ap-worker-email-compose
+    command: uv run --no-sync celery -A src.worker.celery_app:celery_app worker --loglevel=INFO --pool=solo -Q email
+    volumes: []
   beat:
     build: ./AP-Core
     container_name: ap-beat-compose
@@ -181,12 +191,14 @@ services:
       IMAP_USE_SSL: ${IMAP_USE_SSL:-true}
       EMAIL_PROVIDER: ${EMAIL_PROVIDER:-imap}
       EMAIL_POLL_INTERVAL_SECONDS: ${EMAIL_POLL_INTERVAL_SECONDS:-300}
+      EMAIL_MAX_ATTEMPTS: ${EMAIL_MAX_ATTEMPTS:-5}
       EMAIL_POLL_INITIAL_LOOKBACK_HOURS: ${EMAIL_POLL_INITIAL_LOOKBACK_HOURS:-0}
       EMAIL_POLL_ENABLED: ${EMAIL_POLL_ENABLED:-false}
       EMAIL_POLL_MAX_MESSAGES: ${EMAIL_POLL_MAX_MESSAGES:-25}
       EMAIL_MAX_ATTACHMENT_MB: ${EMAIL_MAX_ATTACHMENT_MB:-20}
       EMAIL_ALLOWED_SENDERS: ${EMAIL_ALLOWED_SENDERS:-}
       EMAIL_BLOCKED_SENDERS: ${EMAIL_BLOCKED_SENDERS:-}
+      EMAIL_SENDER_BLOCKLIST: ${EMAIL_SENDER_BLOCKLIST:-no-reply,noreply,mailer-daemon,postmaster}
       EMAIL_MARK_SEEN: ${EMAIL_MARK_SEEN:-false}
       TEST_MAILBOX_ALLOWLIST: ${TEST_MAILBOX_ALLOWLIST:-}
       SMTP_HOST: ${SMTP_HOST:-}
@@ -216,5 +228,5 @@ services:
 volumes:
   ap-postgres-data-compose:
   ap-minio-data-compose:
-
+  hf-cache:
 
