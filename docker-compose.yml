@@ -64,14 +64,14 @@ services:
     command: uv run --no-sync celery -A src.worker.celery_app:celery_app worker --loglevel=INFO --pool=solo
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-ap_user}:${POSTGRES_PASSWORD:?set in .env}@postgres:5432/${POSTGRES_DB:-genworx_ap}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      REDIS_URL: redis://redis:6379/0
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:?set in .env}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       GROQ_MODEL: ${GROQ_MODEL:-}
       GROQ_FALLBACK_MODEL: ${GROQ_FALLBACK_MODEL:-}
-      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://minio:9000}
+      MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?set in .env}
       MINIO_BUCKET: ${MINIO_BUCKET:-ap-documents}
@@ -111,14 +111,14 @@ services:
     command: uv run --no-sync celery -A src.worker.celery_app:celery_app beat --loglevel=INFO
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-ap_user}:${POSTGRES_PASSWORD:?set in .env}@postgres:5432/${POSTGRES_DB:-genworx_ap}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      REDIS_URL: redis://redis:6379/0
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:?set in .env}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       GROQ_MODEL: ${GROQ_MODEL:-}
       GROQ_FALLBACK_MODEL: ${GROQ_FALLBACK_MODEL:-}
-      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://minio:9000}
+      MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?set in .env}
       MINIO_BUCKET: ${MINIO_BUCKET:-ap-documents}
@@ -167,12 +167,12 @@ services:
       USE_CELERY: ${USE_CELERY:-true}
       ENABLE_GOODS_RECEIPT: ${ENABLE_GOODS_RECEIPT:-false}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173}
-      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://minio:9000}
+      MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?set in .env}
       MINIO_BUCKET: ${MINIO_BUCKET:-ap-documents}
       MINIO_SECURE: ${MINIO_SECURE:-false}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      REDIS_URL: redis://redis:6379/0
       IMAP_HOST: ${IMAP_HOST:-}
       IMAP_PORT: ${IMAP_PORT:-993}
       IMAP_USER: ${IMAP_USER:-}
