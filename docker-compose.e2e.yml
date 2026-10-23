@@ -54,6 +54,33 @@ services:
       EMAIL_POLL_INTERVAL_SECONDS: "30"
       EMAIL_POLL_INITIAL_LOOKBACK_HOURS: "0"
 
+  worker-email:
+    container_name: null
+    environment:
+      APP_ENV: e2e
+      LLM_PROVIDER: stub
+      DATABASE_URL: postgresql+psycopg://ap_e2e_user:e2e-only-postgres-password@postgres:5432/genworx_ap_e2e
+      JWT_SECRET_KEY: e2e-only-jwt-signing-key-change-me
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: e2e-minio-user
+      MINIO_SECRET_KEY: e2e-only-minio-password
+      MINIO_BUCKET: ap-documents
+      IMAP_HOST: greenmail
+      IMAP_PORT: "3143"
+      IMAP_USE_SSL: "false"
+      IMAP_USER: ap-test@localhost
+      IMAP_PASSWORD: test-only-password
+      EMAIL_POLL_ENABLED: "true"
+      EMAIL_POLL_INTERVAL_SECONDS: "30"
+      EMAIL_POLL_INITIAL_LOOKBACK_HOURS: "0"
+      TEST_MAILBOX_ALLOWLIST: supplier@localhost,ap-test@localhost,admin@localhost,associate@localhost
+      SMTP_HOST: greenmail
+      SMTP_PORT: "3025"
+      SMTP_USER: ap-test@localhost
+      SMTP_PASSWORD: test-only-password
+      SMTP_FROM: ap-test@localhost
+      SMTP_USE_SSL: "false"
+
   beat:
     container_name: null
     environment:
@@ -95,6 +122,13 @@ services:
       EMAIL_POLL_ENABLED: "true"
       EMAIL_POLL_INTERVAL_SECONDS: "30"
       EMAIL_POLL_INITIAL_LOOKBACK_HOURS: "0"
+      TEST_MAILBOX_ALLOWLIST: supplier@localhost,ap-test@localhost,admin@localhost,associate@localhost
+      SMTP_HOST: greenmail
+      SMTP_PORT: "3025"
+      SMTP_USER: ap-test@localhost
+      SMTP_PASSWORD: test-only-password
+      SMTP_FROM: ap-test@localhost
+      SMTP_USE_SSL: "false"
 
   frontend:
     container_name: null

@@ -1,0 +1,270 @@
+GENWORX AP — PROJECT HANDOFF FOR FRONTEND DEVELOPMENT
+Snapshot date: 2026-10-22
+Workspace: AP (AP-Core, AP-Auth, AP-Frontend)
+
+PURPOSE
+This document is a practical handoff for an AI or engineer building the GenWorx AP Assistant frontend. It describes the current product, architecture, business workflow, API surface, current frontend implementation, and recommended screens. Treat the running API's OpenAPI document as the final authority for request and response schemas: when the services are running, inspect AP-Core /openapi.json or /docs and AP-Auth /openapi.json or /docs. Backend APIs and schemas evolve, so avoid inferring undocumented fields from this summary.
+
+1. PRODUCT OVERVIEW
+GenWorx AP is an accounts-payable workspace. It receives invoices and related documents through manual upload and email polling, classifies and extracts them, associates vendors, purchase orders (POs), and goods receipts (GRs), compares invoice data with purchasing evidence, and guides staff through verification, discrepancy resolution, approval, rejection, and recording an externally completed payment.
+
+The assistant supports people who operate this workflow; it does not replace their authority. AI extraction and matching provide evidence and recommendations. Users see the source document, extracted values, confidence, expected-versus-billed differences, issue history, and next steps. The system never initiates a bank transfer or real payment. “Mark as paid” records an event that happened outside the application.
+
+Core user goals:
+- See what needs attention now and why.
+- Review invoices and supporting evidence without losing the original documents.
+- Correct extracted fields, resolve discrepancies, and maintain an audit trail.
+- Communicate with vendors through drafts that a human reviews and explicitly sends.
+- Track approval, due dates, follow-ups, and externally recorded payment.
+
+2. REPOSITORIES AND SERVICE BOUNDARIES
+- AP-Auth: authentication service. It issues short-lived access tokens and manages refresh sessions in an HttpOnly cookie.
+- AP-Core: business API, database models, workflow services, document processing, background tasks, migrations, and backend tests.
+- AP-Frontend: React + TypeScript + Vite single-page application. It calls AP-Auth for sign-in and AP-Core for business functions.
+- Root workspace: Docker Compose files and scripts for local services and an isolated backend E2E environment.
+
+Typical local services include PostgreSQL, Redis, MinIO object storage, AP-Auth, AP-Core, Celery workers/beat, and (for E2E) a fake mail server. Container-to-container endpoints use Compose service hostnames; frontend browser URLs are configured separately. Do not put secrets in frontend bundles. Use the runtime API URL configuration already present in the frontend and confirm the exact development ports from the Compose configuration rather than hardcoding assumptions.
+
+Database uses PostgreSQL schemas `auth` and `core`. AP-Auth and AP-Core have separate Alembic histories. Business records and audit information live in `core`; user identities live in `auth`. Documents and email attachments are stored as objects in MinIO, while PostgreSQL stores metadata and object keys. Redis supports locking and task infrastructure. Celery separates document processing work from email work. The frontend should use APIs rather than connecting directly to PostgreSQL, Redis, or MinIO.
+
+3. AUTHENTICATION, ROLES, AND FRONTEND SESSION RULES
+AP-Auth endpoints:
+- `GET /health`
+- `GET /api/users/me` — current authenticated identity.
+- `POST /api/auth/register` — body includes email, password, full_name; new self-registered accounts receive the associate role.
+- `POST /api/auth/login` — body includes email and password; returns an access token and sets a refresh cookie.
+- `POST /api/auth/refresh` — renews the access token using the refresh cookie and CSRF protection header.
+- `POST /api/auth/logout` — revokes the refresh session; requires cookie/CSRF handling.
+
+Frontend session contract:
+- Send the access token as `Authorization: Bearer <token>` to AP-Core.
+- Send auth requests that use refresh cookies with browser credentials enabled (`withCredentials` / `credentials: include`).
+- Refresh uses `X-CSRF-Protection: 1` in the current auth client flow.
+- Keep the access token in memory as the existing `authSession.ts` does; do not persist it in localStorage or expose refresh credentials to JavaScript.
+- Handle 401 by attempting the refresh flow once, then return the user to sign-in if refresh fails. Avoid refresh loops when the refresh endpoint itself returns 401.
+- User-visible API failures should show a plain message from the API's `detail` field where available. Never show stack traces, SQL errors, tokens, or raw provider exceptions.
+
+Role policy: the application has associate and admin roles; there is no separate approver role. Associates can use the invoice and issue workflow actions, including verification, editing, resolving, holding/releasing, escalation/reassignment, approve/reject, recording/voiding payment, and resubmission. Keep admin affordances for the backend's admin-only functions such as user/vendor administration and manual email-poll execution. The backend remains the source of authorization; hiding a button is not security. Confirm permissions from OpenAPI and actual 403 responses when implementing each action.
+
+4. BUSINESS OBJECTS AND WORKFLOW
+
+4.1 Documents and classification
+An uploaded or emailed file begins as a document record. The processing path may parse/OCR it, classify it, extract fields, and link it to the appropriate business records. Final document types are `invoice`, `po`, `goods_receipt`, and `other`. A document classified as `other` is retained in the Other bucket and does not enter invoice matching/extraction work. Reclassification can move it into a supported type and queue processing again. Bad or unreadable documents can remain visible with a plain failure message and can be retried.
+
+Email polling supports UID checkpoints, retry/backoff, Message-ID idempotency, overlap deduplication, sender/filter reasons, and attachment handling. Some mails are recorded as ignored/filtered without an .eml object or document tree. Known vendor senders are trusted by the filtering policy; bulk or blocked mail with PDF attachments can still be ingested and may be classified Other. Do not make frontend assumptions that “filtered” means deleted. Email-polling run is an admin operation; status and message history support operational visibility.
+
+4.2 Invoice state
+The invoice workflow status values are:
+`received`, `reading`, `verifying`, `matching`, `match_approved`, `match_issues`, `no_match`, `approved`, `rejected`, `on_hold`, `paid`, `overdue`, `resubmitted`, `failed`.
+
+Legacy `match_status` and `final_status` remain for API/backward compatibility. Prefer `workflow_status` for new UI labels and logic, and use a single label/description mapping in the frontend. State changes have state-history records and timestamps. Invoice timeline combines state changes with pipeline steps and user/system audit actions.
+
+Typical path:
+1. Receive invoice (upload or email).
+2. Parse, classify, extract, and resolve vendor/PO links.
+3. If confidence is low, show `verifying`; matching waits until a user verifies/corrects the values.
+4. Run three-way matching against PO and receipt evidence.
+5. No discrepancy can yield `match_approved`; discrepancies create issues and yield a review state such as `match_issues` or `no_match`.
+6. User resolves issues, requests vendor clarification through an email draft, or records an override with a reason where permitted.
+7. User approves, rejects, or places the invoice on hold. Rejected invoices may be corrected and resubmitted as a new version.
+8. Approved unpaid items appear in Ready to Pay. A user records payment after it was completed externally; the system does not call a bank.
+9. Due-date jobs mark invoices overdue and follow-up jobs generate internal reminders or vendor drafts.
+
+Matching policy is implemented on the server. Current documented behavior includes price variance checks (including the 2% threshold), quantity versus received quantity, missing goods receipt/PO, unknown vendor, duplicate vendor+invoice number handling, tax/currency differences, and confidence gating. The UI should display backend findings and exact expected/actual/difference values rather than recreate matching calculations in TypeScript.
+
+4.3 Confidence and verification
+Extracted fields carry confidence values (0–100), including key invoice header fields and line values. The configured default threshold is 85. Low-confidence documents enter verification and are not matched until confirmed. Verification can update values; changes require an audit reason and record old/new values. Show low-confidence fields prominently, allow the associate to confirm or edit, and distinguish model-derived confidence from confirmed user values when the API exposes that metadata.
+
+4.4 Issues
+Invoice issues represent reviewable discrepancies (for example price, quantity, missing receipt/PO, tax, currency, unknown vendor, duplicate, or low confidence). Issues have severity, status, owner, due date, expected/actual values, and event history. Typical statuses: `open`, `in_progress`, `waiting_vendor`, `escalated`, `resolved`, `dismissed`. Actions include comment, assign/reassign, escalate, contact vendor, resolve, dismiss, and reopen. Reassignment/escalation/dismissal and other specified actions require a reason. Open issues gate approval unless an explicit reasoned override is supplied.
+
+4.5 Email drafts and notifications
+Vendor-facing communication is a human-in-the-loop draft. A user can generate a template draft, edit recipients/subject/body, then explicitly send or discard it. Templates cover matching and clarification scenarios. Draft history records creation/edit/send/failure/discard. Sending is restricted to exact addresses in `TEST_MAILBOX_ALLOWLIST` (as configured on the backend); drafts outside that allowlist are blocked from sending. Replies can be linked to the originating invoice/issue using message/thread references. Do not show a “sent automatically” promise for vendor mail.
+
+Internal reminders and escalation notifications use the notification/outbox flow and allowlist rules. No-attachment or no-match automatic sender notifications are similarly constrained by the server's test allowlist and sender-loop prevention policy. The UI should expose delivery state and safe failure messages, not SMTP internals.
+
+4.6 Payment and command center
+Payment is recordkeeping only. “Mark as paid” needs date, method, and reference. Supported methods include bank transfer, cheque, UPI, cash, and other. Duplicate payment is prevented; a wrong payment record can be voided with a reason. Never label this action “Pay now,” imply money moves through the app, or collect bank credentials.
+
+Command-center buckets include `ready_to_pay`, `overdue`, `rejected`, `needs_attention`, and `all`. The API returns counts/totals for summary and rows for a selected bucket. Overdue is calculated using the configured `APP_TIMEZONE` (default Asia/Kolkata), not the browser timezone. Rows may include days overdue, a reason/alert, can-resubmit, and allowed actions. Follow-ups can be listed and stopped with a reason.
+
+4.7 Supporting documents
+Invoices can have audit supporting files (delivery notes, contracts, approval emails, tax certificates, other). Uploads are associated with an invoice and are separate from the invoice extraction pipeline. They can be listed, viewed/downloaded, and soft-deleted with a required reason. Views/uploads/deletes are audited. Include deleted records only when the authenticated user has the required admin access.
+
+4.8 Audit and timeline
+User changes and state transitions are audited with user, time, reason where applicable, and old/new values. Pipeline steps record short summaries, durations, and result. Invoice timeline provides the chronological story of the bill and should be a primary detail view. General audit log is filterable and paged. Keep timestamps in UTC in the API and render them in the user's chosen display timezone; label timezone conversions clearly.
+
+5. AP-CORE API CATALOG
+All AP-Core business routes below use the `/api` prefix except `/health`. Paths are based on the current router registrations; query parameters and payloads vary. Consult `/openapi.json` for exact models, enums, required fields, and pagination.
+
+Health:
+- `GET /health`
+
+Documents (`/api/documents`):
+- `GET /api/documents` — list, paging, filtering by document type/source/status/workflow and related fields supported by the service.
+- `POST /api/documents/upload` — multipart upload; supports per-file outcomes for multi-file uploads.
+- `GET /api/documents/{document_id}` — document detail and extracted data.
+- `GET /api/documents/{document_id}/file` — original file.
+- `POST /api/documents/{document_id}/retry` and `/rerun` — reprocess.
+- `POST /api/documents/{document_id}/reclassify` — change document type and queue relevant pipeline.
+- `POST /api/documents/{document_id}/parse` — parse/retry path.
+- `POST /api/documents/{document_id}/resolve-po-vendor` — resolve vendor for a PO document.
+- `GET /api/document-workflows/{document_id}` and `POST /api/document-workflows/{document_id}/decisions` — document association/workflow candidates and decisions.
+
+Invoices (`/api/invoices`):
+- `GET /api/invoices` — paginated invoice list with filters and sorting.
+- `GET /api/invoices/review-queue` — work queue.
+- `GET /api/invoices/{invoice_id}` — detail.
+- `PATCH /api/invoices/{invoice_id}` — edit supported invoice fields.
+- `GET /api/invoices/{invoice_id}/verification` and `POST .../verify` — confidence/value review.
+- `GET /api/invoices/{invoice_id}/recommendation` — matching recommendation.
+- `POST /api/invoices/{invoice_id}/three-way-match` or `/match` — run matching.
+- `GET /api/invoices/{invoice_id}/match-runs` — match history.
+- `POST /api/invoices/{invoice_id}/review` — review decision endpoint; inspect schema for current supported decision values.
+- `POST /api/invoices/{invoice_id}/approve`, `/reject`, `/hold`, `/release-hold` — lifecycle actions.
+- `POST /api/invoices/{invoice_id}/escalate`, `/reassign` — invoice ownership/escalation.
+- `POST /api/invoices/{invoice_id}/confirm-po` — confirm PO association.
+- `POST /api/invoices/{invoice_id}/resubmit` — corrected new version after rejection.
+- `POST /api/invoices/{invoice_id}/pay` and `/pay/void` — record/void external payment record.
+- `GET /api/invoices/{invoice_id}/timeline` and `/state-history` — history.
+
+Command center (`/api/command-center`):
+- `GET /api/command-center/summary` — bucket counts and total amounts.
+- `GET /api/command-center/bills?bucket=ready_to_pay|overdue|rejected|needs_attention|all` — bucket list with paging/filter/sort options.
+
+Issues (`/api/issues`):
+- `GET /api/issues` — filter by status, owner, vendor, type, invoice, overdue.
+- `GET /api/issues/{issue_id}` — issue with events.
+- `POST /api/issues/{issue_id}/comment`, `/assign`, `/reassign`, `/escalate`, `/contact-vendor`, `/resolve`, `/dismiss`, `/reopen`.
+
+Email drafts (`/api/email-drafts` and related routes):
+- `GET /api/email-drafts` — filters include status, invoice, issue, kind.
+- `GET /api/email-drafts/{draft_id}` and `PATCH .../{draft_id}` — inspect/edit draft.
+- `POST /api/invoices/{invoice_id}/email-drafts` and `/api/issues/{issue_id}/email-drafts` — generate draft.
+- `POST /api/email-drafts/{draft_id}/send`, `/discard`, `/regenerate`.
+
+Supporting documents (`/api/invoices/{invoice_id}/supporting-documents`):
+- `POST` — multi-file upload with category/description.
+- `GET` — list; `include_deleted=true` is admin-restricted.
+- `GET /{document_id}/file` — view/download and audit.
+- `DELETE /{document_id}` — soft delete; requires a reason.
+
+Other operational APIs:
+- `GET /api/purchase-orders`, `GET /api/purchase-orders/{po_id}`.
+- `GET /api/goods-receipts`, `GET /api/goods-receipts/{id}`, `POST`, `PATCH`, `DELETE` under `/api/goods-receipts`.
+- `/api/vendors`: list/search/detail; create/update and aliases are admin-oriented.
+- `GET /api/users/assignable` — active assignable associates.
+- `GET /api/audit-log` — filterable/paged audit search.
+- `GET /api/follow-ups`, `POST /api/follow-ups/{id}/stop`.
+- `/api/notifications`: list and retry; exception alerts have a separate list route in this router.
+- `/api/email-polling/status`, `/messages`, and admin `POST /api/email-polling/run`.
+
+Common list responses use an `items` array plus `total`, `page`, and `page_size`, but verify the specific endpoint schema. Use stable record IDs, not display labels, for mutations. Send required reasons in the request body for reject/hold/escalate/reassign/override/dismiss/delete/stop actions as required by the endpoint. Treat 409 as a meaningful state/concurrency conflict (for example duplicate payment or invalid transition), 422 as validation, 404 as missing record, and 403 as permission denial.
+
+6. CURRENT FRONTEND IMPLEMENTATION
+AP-Frontend is a React 19 + TypeScript + Vite app. `src/main.tsx` currently contains the main application and several functional workspace views. The current prototype includes:
+- Sign-in/register screen and session restore/logout through AP-Auth.
+- Sidebar sections for Documents, Purchase Orders, Goods Receipts, and Invoice Review.
+- Document upload, paginated document listing, status display, detail/extracted fields, retry/reprocess, file opening, Other reclassification, PO vendor resolution, and document workflow candidate actions.
+- PO register/detail and a path to create a goods receipt.
+- GR creation and receipt register/detail.
+- Invoice review queue, match/recommendation evidence display, and approve/reject/on-hold controls.
+- Axios-based API calls; shared auth-session code handles the in-memory token and refresh flow.
+
+The current UI is not yet a complete frontend for all backend capabilities. In particular, a full command center, invoice verification/edit confidence workflow, invoice state history/timeline, issues workbench, vendor email draft editor/sender, payment record/void UI, supporting-document section, audit-log viewer, follow-up management, richer filters/sorts, and admin tools should be checked/implemented as needed. The code currently has a single large `main.tsx` and local component state; organize new functionality into route/page/component/API modules rather than growing that file further.
+
+Documentation discrepancy: `AP-Frontend/README.md` describes the app as a scaffold placeholder and says login/upload/bills/review features are not implemented. That statement is stale relative to `src/main.tsx`; update it when frontend implementation begins.
+
+7. RECOMMENDED FRONTEND INFORMATION ARCHITECTURE
+Build around the daily AP work queue, not around AI internals. Keep backend state authoritative and make evidence and next action visible.
+
+Suggested shell/navigation:
+- Overview / Command Center
+- Bills / Invoice Review
+- Issues
+- Documents (with Invoice, PO, Goods Receipt, Other filters)
+- Purchase Orders
+- Goods Receipts
+- Email Drafts
+- Vendors (admin functions)
+- Audit Log / Activity
+- Follow-ups
+- Account / sign out
+
+Suggested key screens:
+
+A. Command Center
+- Summary cards for Ready to Pay, Overdue, Rejected, Needs Attention, and totals.
+- A prioritized table with vendor, invoice number, amount/currency, due date/days overdue, owner, status, issue reason, alert, and allowed actions.
+- Filters for owner/vendor/status/amount/due date/GL code/confidence where supported.
+- Make bucket definitions clear and use server bucket results rather than client approximations.
+
+B. Invoice detail (central workspace)
+- Header: vendor, invoice number, amount/currency, workflow status, due date, owner, current version, source.
+- Document viewer alongside extracted fields; support original file access and page navigation where practical.
+- Tabs or sections: Summary, Verification, Matching Evidence, Issues, Supporting Documents, Email Drafts, Timeline.
+- Matching evidence should show PO/GR source records and expected vs billed values and the exact difference/reason.
+- Verification should highlight confidence below threshold, allow confirm/edit, capture required reason, and show save outcome.
+- Approve/reject/hold/release/escalate/reassign/resubmit actions should appear only when backend says they are applicable. Confirmation dialogs should capture required reasons. Clearly explain that open issues may require resolution or a reasoned override.
+- Payment panel should say “Record external payment” or “Mark as paid”; collect date/method/reference and never imply an actual payment is sent.
+
+C. Issues workbench
+- Queue by status/severity/owner/due date/overdue/vendor/type.
+- Issue detail with event thread, difference values, comments, assignment, escalation, resolve/dismiss/reopen.
+- “Contact vendor” creates a draft; show draft status and route to the human send/edit flow.
+
+D. Email drafts
+- Draft inbox filters by status, kind, invoice, issue.
+- Preview vendor/recipient, subject, body, references, linked invoice/issue, and allowlist-blocked state.
+- Edit recipients/cc/body/subject before explicit send; confirm send; show failed/retry/discard outcomes.
+- Never silently auto-send vendor-facing drafts.
+
+E. Documents and purchasing records
+- Document filters for type/status/source, including Other and email sender/subject where available.
+- Upload multiple files with a per-file accepted/ignored/duplicate/failed result.
+- Show processing state and plain failure guidance; retry/reclassify when permitted.
+- PO and GR registers/detail should link to each other and to related invoices.
+
+F. Audit/timeline and follow-ups
+- Timeline on invoice detail should interleave state changes, processing steps, user actions, and email events in time order.
+- Audit screen has date/action/entity/user/result filters and pagination.
+- Follow-up screen exposes recipient, kind, due/last sent, attempts, stop state/reason; stopping requires a reason.
+
+8. UI AND API ENGINEERING GUIDANCE
+- Keep a typed API client with separate auth and core base URLs; define TypeScript types from OpenAPI if practical.
+- Use React Query for cache, pagination, invalidation, and mutation state. Invalidate invoice/command-center/issue/timeline queries after mutations.
+- Prefer server-side filtering, sorting, and pagination. Keep query parameters in the URL so queue views can be bookmarked/shared.
+- Use enums and status-label maps, not scattered string comparisons. Unknown statuses should render safely as humanized text.
+- Handle 409 conflicts by refreshing the record and explaining the latest state; do not blindly retry state-changing requests.
+- Make upload and long-running pipeline states explicit; poll only while work is active, with cancellation and bounded intervals.
+- Make errors actionable and plain-language. Avoid displaying technical detail fields unless an authorized diagnostics view is explicitly intended.
+- Show empty, loading, permission-denied, stale-data, and partial per-file upload states.
+- Use accessible labels, keyboard navigation, focus management in dialogs, responsive tables/cards, and clear contrast.
+- Preserve source evidence: show document filename and links; do not imply extracted values are verified until users confirm them.
+- Ensure destructive or irreversible-looking actions (reject, dismiss, delete/soft-delete, payment void) have clear confirmation and reason entry.
+- Do not duplicate business rules in the client. Backend responses determine matching, eligibility, allowed actions, authorization, and state transitions.
+
+9. LOCAL DEVELOPMENT AND E2E
+The root workspace has an isolated E2E Compose configuration and a Windows PowerShell runner (`scripts/run_e2e.ps1`) with supporting docs under `docs/E2E.md`. The E2E path is intended to use its own project/resources and fake mail server with deterministic test behavior, not real Gmail or paid model calls. Run from the workspace root using the command documented in `docs/E2E.md`; follow that document for the required Python environment and whether to keep the stack for debugging. The backend check script is `AP-Core/scripts/e2e_backend_check.py` and should be invoked from AP-Core when its sample test imports require that working directory.
+
+For API development, start the appropriate services and inspect `/docs` and `/openapi.json` for live schemas. Do not treat a successful frontend build as proof that API workflows work; exercise auth, queue loading, detail views, validation errors, and mutations against the isolated E2E stack.
+
+10. FIRST FRONTEND MILESTONES
+1. Refresh the frontend README and split `main.tsx` into app shell, pages, API clients, types, and reusable components.
+2. Add route-based navigation and a typed auth/core API layer while retaining the existing auth-session protections.
+3. Build Command Center summary + bucket tables using the backend endpoints.
+4. Build invoice detail with verification, match evidence, issues, supporting docs, and timeline.
+5. Add human-reviewed email drafts and external-payment recording.
+6. Add issue, follow-up, audit, admin/vendor, and expanded document filters.
+7. Verify role handling, reasons, conflicts, empty/error/loading states, and end-to-end flows against the isolated backend environment.
+
+11. QUICK REFERENCE
+- Primary app: AP-Frontend (React + TypeScript + Vite).
+- Business API: AP-Core; authentication: AP-Auth.
+- API contracts: runtime `/openapi.json` and `/docs`.
+- Main records: Document, Invoice (+ lines), Vendor (+ aliases), Purchase Order (+ lines/versions), Goods Receipt (+ lines), Invoice Issue (+ events), Email Draft (+ events), Supporting Document, Payment, Follow-up, Audit/State History.
+- Main workflow rule: AI extracts/recommends; the backend enforces confidence gates, match rules, allowed transitions, and permissions; people review and act.
+- Email rule: vendor-facing messages are drafts that a human edits/reviews/sends and must obey the server allowlist.
+- Payment rule: the app records outside payment; it never moves money.
+- Time rule: storage is UTC; due-date calculations use `APP_TIMEZONE` (default Asia/Kolkata); display timezone should be explicit.
+- Never put service credentials or backend secrets in the browser or this report.
