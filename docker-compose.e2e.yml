@@ -73,6 +73,13 @@ services:
       EMAIL_POLL_ENABLED: "true"
       EMAIL_POLL_INTERVAL_SECONDS: "30"
       EMAIL_POLL_INITIAL_LOOKBACK_HOURS: "0"
+      TEST_MAILBOX_ALLOWLIST: supplier@localhost,ap-test@localhost,admin@localhost,associate@localhost
+      SMTP_HOST: greenmail
+      SMTP_PORT: "3025"
+      SMTP_USER: ap-test@localhost
+      SMTP_PASSWORD: test-only-password
+      SMTP_FROM: ap-test@localhost
+      SMTP_USE_SSL: "false"
 
   beat:
     container_name: null
@@ -115,6 +122,13 @@ services:
       EMAIL_POLL_ENABLED: "true"
       EMAIL_POLL_INTERVAL_SECONDS: "30"
       EMAIL_POLL_INITIAL_LOOKBACK_HOURS: "0"
+      TEST_MAILBOX_ALLOWLIST: supplier@localhost,ap-test@localhost,admin@localhost,associate@localhost
+      SMTP_HOST: greenmail
+      SMTP_PORT: "3025"
+      SMTP_USER: ap-test@localhost
+      SMTP_PASSWORD: test-only-password
+      SMTP_FROM: ap-test@localhost
+      SMTP_USE_SSL: "false"
 
   frontend:
     container_name: null

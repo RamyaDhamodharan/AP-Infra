@@ -1,109 +1,141 @@
-$ErrorActionPreference = "Stop"
-$ProjectName = "ap-backend-e2e"
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$coreRoot = Join-Path $repoRoot "AP-Core"
-$composeBase = Join-Path $repoRoot "docker-compose.yml"
-$composeOverride = Join-Path $repoRoot "docker-compose.e2e.yml"
-$composeEnv = Join-Path ([System.IO.Path]::GetTempPath()) "ap-backend-e2e-$PID.env"
-$stackStarted = $false
+[CmdletBinding()]
+param(
+    [switch]$KeepStack
+)
 
-function Invoke-Compose {
-    param([string[]]$Arguments)
-    & docker compose --project-name $ProjectName --env-file $composeEnv `
-        --file $composeBase --file $composeOverride @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "docker compose failed with exit code $LASTEXITCODE"
+$ErrorActionPreference = 'Stop'
+if (Test-Path variable:PSNativeCommandUseErrorActionPreference) {
+    $PSNativeCommandUseErrorActionPreference = $false
+}
+
+$Root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$Core = Join-Path $Root 'AP-Core'
+$ComposeEnv = Join-Path $PSScriptRoot 'e2e-compose.env'
+$Project = 'ap-backend-e2e'
+$ComposeFiles = @('-f', (Join-Path $Root 'docker-compose.yml'), '-f', (Join-Path $Root 'docker-compose.e2e.yml'))
+$ComposePrefix = @('compose', '--env-file', $ComposeEnv, '-p', $Project) + $ComposeFiles
+$TranscriptPath = Join-Path $Root 'e2e_run.txt'
+$Passed = $false
+$CurrentPhase = 'startup'
+
+function Invoke-Native {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    $HasNativePreference = Test-Path variable:PSNativeCommandUseErrorActionPreference
+    if ($HasNativePreference) {
+        $PreviousNativePreference = $PSNativeCommandUseErrorActionPreference
+    }
+    try {
+        $ErrorActionPreference = 'Continue'
+        if ($HasNativePreference) {
+            $PSNativeCommandUseErrorActionPreference = $false
+        }
+        $NativeOutput = & $FilePath @Arguments 2>&1
+        $NativeExitCode = $LASTEXITCODE
+        if ($NativeOutput) {
+            $NativeOutput | ForEach-Object { Write-Host ([string]$_) }
+        }
+    } finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+        if ($HasNativePreference) {
+            $PSNativeCommandUseErrorActionPreference = $PreviousNativePreference
+        }
+    }
+    if ($NativeExitCode -ne 0) {
+        throw "$Label failed with exit code $NativeExitCode"
     }
 }
+
+function Invoke-DockerCompose {
+    param([string[]]$Arguments, [string]$Label = 'docker compose')
+    Invoke-Native -FilePath 'docker' -Arguments $Arguments -Label $Label
+}
+
+function Wait-Http {
+    param([string]$Url, [string]$Label)
+    $Deadline = (Get-Date).AddMinutes(3)
+    while ((Get-Date) -lt $Deadline) {
+        try {
+            $Response = Invoke-WebRequest -Uri $Url -TimeoutSec 3 -UseBasicParsing
+            if ($Response.StatusCode -eq 200) { Write-Host "PASS | $Label healthy"; return }
+        } catch { Start-Sleep -Seconds 2 }
+    }
+    throw "$Label did not become healthy at $Url"
+}
+
+function Register-E2EUser {
+    param([string]$Email, [string]$Name)
+    $Body = @{ email = $Email; password = 'e2e-local-user-password-only'; full_name = $Name } | ConvertTo-Json
+    try {
+        Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:18001/api/auth/register' -ContentType 'application/json' -Body $Body | Out-Null
+    } catch {
+        # Kept stacks may already contain the deterministic account. Login verifies it below.
+        try {
+            Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:18001/api/auth/login' -ContentType 'application/json' -Body (@{email=$Email; password='e2e-local-user-password-only'} | ConvertTo-Json) | Out-Null
+        } catch { throw "Could not register or verify E2E user $Email" }
+    }
+}
+
+Start-Transcript -Path $TranscriptPath -Append | Out-Null
 
 try {
-    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-        throw "Docker CLI was not found. Install Docker Desktop and retry."
-    }
+    Write-Host "Starting isolated Compose project '$Project' using ap-core:latest..."
+    $CurrentPhase = 'build'
+    Write-Host 'PHASE | build'
+    Invoke-DockerCompose ($ComposePrefix + @('build')) 'E2E image build'
+    Write-Host 'PASS | build'
 
-    @(
-        "POSTGRES_USER=ap_e2e_user",
-        "POSTGRES_PASSWORD=e2e-only-postgres-password",
-        "POSTGRES_DB=genworx_ap_e2e",
-        "JWT_SECRET_KEY=e2e-only-jwt-signing-key-change-me",
-        "MINIO_ROOT_USER=e2e-minio-user",
-        "MINIO_ROOT_PASSWORD=e2e-only-minio-password",
-        "OPENROUTER_API_KEY=",
-        "OPENROUTER_MODEL=",
-        "GROQ_API_KEY=",
-        "GROQ_MODEL=",
-        "GROQ_FALLBACK_MODEL=",
-        "REDIS_URL=redis://redis:6379/0",
-        "IMAP_HOST=greenmail",
-        "IMAP_PORT=3143",
-        "IMAP_USER=ap-test@localhost",
-        "IMAP_PASSWORD=test-only-password",
-        "IMAP_USE_SSL=false",
-        "EMAIL_POLL_ENABLED=true",
-        "EMAIL_POLL_INTERVAL_SECONDS=30"
-    ) | Set-Content -LiteralPath $composeEnv -Encoding ascii
+    $CurrentPhase = 'up'
+    Write-Host 'PHASE | up'
+    Invoke-DockerCompose ($ComposePrefix + @('up', '-d')) 'E2E stack start'
+    Write-Host 'PASS | up'
 
-    Write-Host "Starting isolated Compose project '$ProjectName'..."
-    $stackStarted = $true
-    Invoke-Compose @("up", "--detach", "--build")
+    $CurrentPhase = 'health'
+    Write-Host 'PHASE | health'
+    Wait-Http 'http://127.0.0.1:18001/health' 'Auth API'
+    Wait-Http 'http://127.0.0.1:18000/health' 'Core API'
+    Write-Host 'PASS | health'
 
-    $healthy = $false
-    for ($attempt = 0; $attempt -lt 120; $attempt++) {
-        try {
-            $core = Invoke-RestMethod -Uri "http://127.0.0.1:18000/health" -TimeoutSec 2
-            $auth = Invoke-RestMethod -Uri "http://127.0.0.1:18001/health" -TimeoutSec 2
-            if ($core.status -eq "ok" -and $auth.status -eq "ok") {
-                $healthy = $true
-                break
-            }
-        }
-        catch {
-            Start-Sleep -Seconds 1
-        }
-    }
-    if (-not $healthy) {
-        throw "Core/Auth health checks did not become ready within 120 seconds."
-    }
+    $CurrentPhase = 'migrations'
+    Write-Host 'PHASE | migrations'
+    Invoke-DockerCompose ($ComposePrefix + @('exec', '-T', 'auth', 'python', '-m', 'alembic', 'upgrade', 'head')) 'Auth migrations'
+    Invoke-DockerCompose ($ComposePrefix + @('exec', '-T', 'core', 'uv', 'run', '--no-sync', 'alembic', 'upgrade', 'head')) 'Core migrations'
+    Write-Host 'PASS | migrations'
 
-    Write-Host "Applying Auth and Core migrations..."
-    Invoke-Compose @("exec", "--no-TTY", "auth", "alembic", "upgrade", "head")
-    Invoke-Compose @("exec", "--no-TTY", "core", "uv", "run", "--no-sync", "alembic", "upgrade", "head")
+    $CurrentPhase = 'users'
+    Write-Host 'PHASE | users'
+    Register-E2EUser 'admin@localhost' 'Synthetic E2E Admin'
+    Register-E2EUser 'associate@localhost' 'Synthetic E2E Associate'
+    $Sql = "UPDATE auth.users SET role = 'admin'::auth.user_role WHERE email = 'admin@localhost';"
+    Invoke-DockerCompose ($ComposePrefix + @('exec', '-T', 'postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-U', 'ap_e2e_user', '-d', 'genworx_ap_e2e', '-c', $Sql))
 
-    Write-Host "Creating isolated E2E administrator..."
-    $adminPasswordInput = "e2e-local-user-password-only`ne2e-local-user-password-only`n"
-    $adminPasswordInput | & docker compose --project-name $ProjectName --env-file $composeEnv `
-        --file $composeBase --file $composeOverride exec --no-TTY auth `
-        python scripts/create_admin.py --email admin@localhost
-    if ($LASTEXITCODE -ne 0) {
-        throw "E2E admin seeding failed with exit code $LASTEXITCODE"
-    }
-
-    Write-Host "Running backend E2E checks..."
-    Push-Location $coreRoot
+    Write-Host 'PASS | users'
+    $CurrentPhase = 'checks'
+    Write-Host 'PHASE | checks'
+    Write-Host 'Running API/GreenMail scenarios from AP-Core (tests.e2e.sample_documents import path)...'
+    Push-Location $Core
     try {
-        uv run --extra dev python -m scripts.e2e_backend_check
-        if ($LASTEXITCODE -ne 0) {
-            throw "Backend E2E checks failed with exit code $LASTEXITCODE"
-        }
+        Invoke-Native -FilePath 'uv' -Arguments @('run', '--extra', 'dev', 'python', '-m', 'scripts.e2e_backend_check') -Label 'E2E checker'
+        $Passed = $true
+        Write-Host 'PASS | checks'
+    } finally { Pop-Location }
+} catch {
+    Write-Host "FAIL | $CurrentPhase | $($_.Exception.Message)" -ForegroundColor Red
+} finally {
+    if ($KeepStack) {
+        Write-Host "DEBUG | Keeping isolated project '$Project' running."
+    } else {
+        Write-Host "Tearing down only isolated project '$Project' and its volumes..."
+        try { Invoke-DockerCompose ($ComposePrefix + @('down', '--volumes', '--remove-orphans')) }
+        catch { Write-Host "FAIL | isolated teardown | $($_.Exception.Message)" -ForegroundColor Red; $Passed = $false }
     }
-    finally {
-        Pop-Location
-    }
+    if ($Passed) { Write-Host 'E2E SUMMARY | PASS' -ForegroundColor Green }
+    else { Write-Host 'E2E SUMMARY | FAIL' -ForegroundColor Red }
+    Stop-Transcript | Out-Null
 }
-catch {
-    Write-Error $_
-    exit 1
-}
-finally {
-    if ($stackStarted) {
-        Write-Host "Tearing down only Compose project '$ProjectName' and its volumes..."
-        & docker compose --project-name $ProjectName --env-file $composeEnv `
-            --file $composeBase --file $composeOverride down --volumes --remove-orphans
-        if ($LASTEXITCODE -ne 0) {
-            Write-Warning "Isolated E2E Compose teardown failed with exit code $LASTEXITCODE"
-        }
-    }
-    if (Test-Path -LiteralPath $composeEnv) {
-        Remove-Item -LiteralPath $composeEnv -Force
-    }
-}
+
+if (-not $Passed) { exit 1 }

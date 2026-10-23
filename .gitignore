@@ -50,3 +50,6 @@ AP-Frontend/
 *.backup
 .pnpm-store/
 .pytest_cache/
+
+e2e_run.txt
+backups/
